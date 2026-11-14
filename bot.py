@@ -31,12 +31,12 @@ def get_klines(symbol, interval, limit):
     formatted = []
     for c in raw_data:
         formatted.append([
-            int(c) * 1000,
-            c,
-            c,
-            c,
-            c,
-            c
+                        int(c[0]) * 1000,
+            c[5],
+            c[3],
+            c[4],
+            c[2],
+            c[1]
         ])
     return formatted
 
