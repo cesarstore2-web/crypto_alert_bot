@@ -172,13 +172,14 @@ def scan(symbol):
 
 
 def main():
-    info = get_json(BASE + "/api/v3/exchangeInfo?permissions=SPOT")
+        info = get_json(BASE + "/api/v3/exchangeInfo?permissions=SPOT")
 
     active = {
         item["symbol"]
         for item in info["symbols"]
         if item["status"] == "TRADING"
     }
+
 
     state = load_state()
 
