@@ -11,7 +11,7 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE = "state.json"
 
-BASE = "https://gateio.ws"
+BASE = "https://api.gateio.ws/api/4v"
 
 def get_json(url):
     req = urllib.request.Request(
