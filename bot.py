@@ -1,4 +1,3 @@
-
 import json
 import os
 import time
@@ -11,7 +10,8 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE = "state.json"
 
-BASE = "https://api.gateio.ws/api/4v"
+BASE = "https://gateio.ws"
+
 
 def get_json(url):
     req = urllib.request.Request(
@@ -19,6 +19,7 @@ def get_json(url):
     )
     with urllib.request.urlopen(req, timeout=20) as response:
         return json.loads(response.read().decode())
+
 
 def get_klines(symbol, interval, limit):
     gate_symbol = symbol.replace("USDT", "_USDT") if "_" not in symbol else symbol
@@ -28,15 +29,25 @@ def get_klines(symbol, interval, limit):
         "limit": limit
     })
     raw_data = get_json(f"{BASE}/spot/candlesticks?{params}")
+
+    interval_ms = {
+        "1h": 3600 * 1000,
+        "15m": 15 * 60 * 1000,
+        "5m": 5 * 60 * 1000
+    }.get(interval, 60 * 1000)
+
     formatted = []
     for c in raw_data:
+        open_time = int(c[0]) * 1000
+        close_time = open_time + interval_ms - 1
         formatted.append([
-                        int(c[0]) * 1000,
+            open_time,
             c[5],
             c[3],
             c[4],
             c[2],
-            c[1]
+            c[1],
+            close_time
         ])
     return formatted
 
@@ -181,7 +192,6 @@ def main():
     }
 
     state = load_state()
-
 
     for symbol in SYMBOLS:
         if symbol not in active:
