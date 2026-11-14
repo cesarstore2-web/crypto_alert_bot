@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "30 16 * * 1-5"
   workflow_dispatch:
+  push:
+    paths:
+      - "bvc_bot.py"
+      - ".github/workflows/bvc.yml"
 
 permissions:
   contents: write
@@ -29,7 +33,9 @@ jobs:
 
       - name: Save state
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add state_bvc.json
-          git diff --cached --quiet || (git commit -m "update bvc state" && git push)
+          if [ -f state_bvc.json ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add state_bvc.json
+            git diff --cached --quiet || (git commit -m "update bvc state" && git push)
+          fi
