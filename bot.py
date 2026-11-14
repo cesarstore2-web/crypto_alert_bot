@@ -10,48 +10,35 @@ SYMBOLS = ["BERAUSDT", "XLMUSDT", "ZECUSDT", "BTCUSDT", "ETHUSDT"]
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE = "state.json"
-import urllib.request
-import json
-import random
 
-def get_free_proxies():
-    url = "https://proxyscrape.com"
-    try:
-        with urllib.request.urlopen(url, timeout=10) as res:
-            proxies = res.read().decode('utf-8').splitlines()
-            random.shuffle(proxies)
-            return proxies[:15]
-    except Exception:
-        return []
+BASE = "https://gateio.ws"
 
 def get_json(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    proxies = get_free_proxies()
-    
-    for proxy in proxies:
-        try:
-            proxy_handler = urllib.request.ProxyHandler({'http': f'http://{proxy}', 'https': f'http://{proxy}'})
-            opener = urllib.request.build_opener(proxy_handler)
-            req = urllib.request.Request(url, headers=headers)
-            with opener.open(req, timeout=10) as response:
-                return json.loads(response.read().decode('utf-8'))
-        except Exception:
-            continue
-            
-    # محاولة أخيرة بدون بروكسي في حال فشل جميع البروكسيات
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0"}
+    )
     with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode('utf-8'))
-
-
+        return json.loads(response.read().decode())
 
 def get_klines(symbol, interval, limit):
+    gate_symbol = symbol.replace("USDT", "_USDT") if "_" not in symbol else symbol
     params = urllib.parse.urlencode({
-        "symbol": symbol,
+        "currency_pair": gate_symbol,
         "interval": interval,
         "limit": limit
     })
-    return get_json(f"{BASE}/api/v3/klines?{params}")
+    raw_data = get_json(f"{BASE}/spot/candlesticks?{params}")
+    formatted = []
+    for c in raw_data:
+        formatted.append([
+            int(c) * 1000,
+            c,
+            c,
+            c,
+            c,
+            c
+        ])
+    return formatted
 
 
 def ema(values, period):
