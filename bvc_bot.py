@@ -10,8 +10,8 @@ import pandas as pd
 
 CANDIDATES = [
     "Attijariwafa", "BCP", "CIH", "BOA", "IAM", "Addoha",
-    "Marsa Maroc", "LafargeHolcim", "Cosumar", "TAQA Morocco",
-    "Label Vie", "Managem", "SMI", "Akdital", "Sonasid",
+    "Akdital", "COSUMAR", "Ciments Maroc", "CMGP Group",
+    "CTM", "HPS", "CFG Bank", "Aradei Capital", "BMCI", "CDM",
 ]
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
@@ -49,7 +49,16 @@ def fmt(v):
 
 def get_df(symbol):
     start = (date.today() - timedelta(days=400)).isoformat()
-    df = cas.get_history(symbol, start=start)
+    df = None
+    for kwargs in ({"start": start}, {}):
+        try:
+            df = cas.get_history(symbol, **kwargs)
+        except Exception as error:
+            print("get_history failed:", symbol, kwargs, str(error)[:100])
+            df = None
+        if df is not None and len(df) > 0:
+            break
+
     if df is None or len(df) == 0:
         return None
 
@@ -264,11 +273,6 @@ def main():
 
     if not results:
         report = "⚠️ BVC bot: لا توجد نتائج\n" + "\n".join(errors[:6])
-        try:
-            names = cas.notation()
-            report += "\nأسماء متاحة: " + ", ".join(str(n) for n in list(names)[:40])
-        except Exception as error:
-            report += f"\nnotation failed: {str(error)[:80]}"
         print(report)
         send_telegram(report[:3500])
         return
