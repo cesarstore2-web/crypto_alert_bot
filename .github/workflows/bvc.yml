@@ -7,6 +7,7 @@ on:
   push:
     paths:
       - "bvc_bot.py"
+      - "diag.py"
       - ".github/workflows/bvc.yml"
 
 permissions:
@@ -23,13 +24,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install casased
+        run: pip install "casased[cloudflare]"
 
       - name: Run BVC scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bvc_bot.py
+        run: python diag.py
 
       - name: Save state
         run: |
