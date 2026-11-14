@@ -197,6 +197,7 @@ def get_active_pairs():
 def main():
     active = get_active_pairs()
     state = load_state()
+    send_telegram("اختبار: البوت يعمل ✅")
 
     for symbol in SYMBOLS:
         if symbol not in active:
