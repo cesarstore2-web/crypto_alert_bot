@@ -128,23 +128,29 @@ def evaluate(symbol, df):
     # RSI (25)
     if r > r1:
         if r < 30:
-            score += 25; why.append("RSI في تشبع بيعي ويرتد")
+            score += 25
+            why.append("RSI في تشبع بيعي ويرتد")
         elif r < 40:
-            score += 20; why.append("RSI منخفض ويرتفع")
+            score += 20
+            why.append("RSI منخفض ويرتفع")
         elif r < 50:
-            score += 12; why.append("RSI يرتفع من منطقة محايدة")
+            score += 12
+            why.append("RSI يرتفع من منطقة محايدة")
         elif r <= 65:
             score += 6
     if r > 70:
-        score -= 15; why.append("RSI مرتفع (خطر)")
+        score -= 15
+        why.append("RSI مرتفع (خطر)")
 
     # Stochastic (25)
     cross_up = k0 > d0 and k1 <= d1
     if cross_up:
         if k0 < 30:
-            score += 25; why.append("تقاطع Stochastic صاعد في القاع")
+            score += 25
+            why.append("تقاطع Stochastic صاعد في القاع")
         elif k0 < 50:
-            score += 18; why.append("تقاطع Stochastic صاعد")
+            score += 18
+            why.append("تقاطع Stochastic صاعد")
         elif k0 < 80:
             score += 8
     elif k0 > d0 and k0 < 40:
@@ -152,11 +158,13 @@ def evaluate(symbol, df):
 
     # Donchian 20 (25)
     if c > h20:
-        score += 25; why.append("اختراق أعلى قمة 20 يوماً")
+        score += 25
+        why.append("اختراق أعلى قمة 20 يوماً")
     else:
         pos = (c - l20) / (h20 - l20) if h20 > l20 else 0.5
         if pos < 0.2 and c > c1:
-            score += 15; why.append("ارتداد من أسفل القناة")
+            score += 15
+            why.append("ارتداد من أسفل القناة")
         elif pos < 0.4 and c > c1:
             score += 8
 
@@ -166,9 +174,11 @@ def evaluate(symbol, df):
     if not pd.isna(vol) and not pd.isna(vm) and vm > 0:
         ratio = vol / vm
         if ratio >= 2:
-            score += 20; why.append("حجم تداول مرتفع جداً")
+            score += 20
+            why.append("حجم تداول مرتفع جداً")
         elif ratio >= 1.5:
-            score += 15; why.append("حجم تداول مرتفع")
+            score += 15
+            why.append("حجم تداول مرتفع")
         elif ratio >= 1:
             score += 8
 
@@ -176,7 +186,8 @@ def evaluate(symbol, df):
     if c > c1 and change < 0.06:
         score += 5
     if change > 0.07:
-        score -= 10; why.append("صعد كثيراً اليوم (مطاردة سعر)")
+        score -= 10
+        why.append("صعد كثيراً اليوم (مطاردة سعر)")
 
     score = max(0, min(100, score))
 
@@ -225,32 +236,41 @@ def build_message(top, others):
 def main():
     state = load_state()
     results = []
+    errors = []
 
     for symbol in CANDIDATES:
         try:
             df = get_df(symbol)
             if df is None:
                 print("No data:", symbol)
+                errors.append(f"{symbol}: no data")
                 continue
 
             age = (pd.Timestamp.today().normalize() - df.index[-1]).days
             if age > 5:
                 print("Stale data:", symbol, df.index[-1].date())
+                errors.append(f"{symbol}: stale {df.index[-1].date()}")
                 continue
 
             res = evaluate(symbol, df)
             if res:
                 results.append(res)
                 print("Score:", symbol, res["score"])
+            else:
+                errors.append(f"{symbol}: not enough data")
         except Exception as error:
             print("Error:", symbol, str(error))
+            errors.append(f"{symbol}: {str(error)[:80]}")
 
     if not results:
-        print("No results. Available names:")
+        report = "⚠️ BVC bot: لا توجد نتائج\n" + "\n".join(errors[:6])
         try:
-            print(cas.notation())
+            names = cas.notation()
+            report += "\nأسماء متاحة: " + ", ".join(str(n) for n in list(names)[:40])
         except Exception as error:
-            print("notation failed:", str(error))
+            report += f"\nnotation failed: {str(error)[:80]}"
+        print(report)
+        send_telegram(report[:3500])
         return
 
     results.sort(key=lambda x: x["score"], reverse=True)
