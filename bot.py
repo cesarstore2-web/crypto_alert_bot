@@ -1,21 +1,31 @@
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 SYMBOLS = ["BERAUSDT", "XLMUSDT", "ZECUSDT", "BTCUSDT", "ETHUSDT"]
-TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
 STATE_FILE = "state.json"
 
 BASE = "https://api.gateio.ws/api/v4"
 
+INTERVAL_MS = {
+    "1h": 3600 * 1000,
+    "15m": 15 * 60 * 1000,
+    "5m": 5 * 60 * 1000,
+}
+
 
 def get_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code} for {url}") from e
 
 
 def get_klines(symbol, interval, limit):
@@ -23,22 +33,21 @@ def get_klines(symbol, interval, limit):
     params = urllib.parse.urlencode({
         "currency_pair": gate_symbol,
         "interval": interval,
-        "limit": limit
+        "limit": limit,
     })
     raw_data = get_json(f"{BASE}/spot/candlesticks?{params}")
 
-    interval_ms = {
-        "1h": 3600 * 1000,
-        "15m": 15 * 60 * 1000,
-        "5m": 5 * 60 * 1000
-    }.get(interval, 60 * 1000)
+    step = INTERVAL_MS.get(interval, 60 * 1000)
 
+    # Gate.io: [time, quote_volume, close, high, low, open, ...]
     formatted = []
     for c in raw_data:
         t_str, vol, close_p, high_p, low_p, open_p = c[:6]
         open_time = int(t_str) * 1000
-        close_time = open_time + interval_ms - 1
+        close_time = open_time + step - 1
         formatted.append([open_time, open_p, high_p, low_p, close_p, vol, close_time])
+
+    formatted.sort(key=lambda x: x[0])
     return formatted
 
 
@@ -55,18 +64,22 @@ def ema(values, period):
 def send_telegram(message):
     data = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
-        "text": message
+        "text": message,
     }).encode()
 
-    request = urllib.request.Request(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data=data
-    )
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    request = urllib.request.Request(url, data=data)
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        result = json.loads(response.read().decode())
-        if not result.get("ok"):
-            raise RuntimeError("Telegram message failed")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            result = json.loads(response.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"Telegram HTTP {e.code} - check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"
+        ) from e
+
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram message failed: {result}")
 
 
 def load_state():
@@ -112,7 +125,7 @@ def scan(symbol):
     if trend == "SELL" and close15[-1] >= ema15:
         return None
 
-    # A = شمعة الـ Sweep ، B = شمعة الاندفاع ، C = شمعة التأكيد
+    # A = شمعة الـ Sweep ، C = شمعة التأكيد ، والـ FVG هو الفجوة بينهما
     a = m5[-3]
     c = m5[-1]
     prior = m5[-15:-3]  # 12 شمعة قبل A
@@ -121,17 +134,17 @@ def scan(symbol):
     ref_high = max(float(x[2]) for x in prior)
 
     a_high, a_low, a_close = float(a[2]), float(a[3]), float(a[4])
-    c_open, c_high, c_low, c_close = float(c[1]), float(c[2]), float(c[3]), float(c[4])
+    c_open, c_high, c_low, c_close = (
+        float(c[1]), float(c[2]), float(c[3]), float(c[4])
+    )
 
     side = None
 
     if trend == "BUY":
-        # Sweep للسيولة تحت القيعان + إغلاق فوقها + FVG صاعد + شمعة تأكيد خضراء
         if a_low < ref_low and a_close > ref_low and c_low > a_high and c_close > c_open:
             side = "BUY"
 
     if trend == "SELL":
-        # Sweep فوق القمم + إغلاق تحتها + FVG هابط + شمعة تأكيد حمراء
         if a_high > ref_high and a_close < ref_high and c_high < a_low and c_close < c_open:
             side = "SELL"
 
@@ -164,17 +177,25 @@ def scan(symbol):
         "stop": stop,
         "tp1": tp1,
         "tp2": tp2,
-        "candle": str(c[6])
+        "candle": str(c[6]),
     }
+
+
+def get_active_pairs():
+    try:
+        info = get_json(BASE + "/spot/currency_pairs")
+        return {
+            item["id"].replace("_", "")
+            for item in info
+            if item.get("trade_status") == "tradable"
+        }
+    except Exception as error:
+        print("Could not load pairs list, scanning all symbols:", str(error))
+        return set(SYMBOLS)
 
 
 def main():
-    info = get_json(BASE + "/spot/currency_pairs")
-    active = {
-        item["id"].replace("_", "")
-        for item in info
-        if item.get("trade_status") == "tradable"
-    }
+    active = get_active_pairs()
     state = load_state()
 
     for symbol in SYMBOLS:
@@ -192,6 +213,7 @@ def main():
             key = symbol + ":" + signal["side"]
 
             if state.get(key) == signal["candle"]:
+                print("Already sent:", symbol)
                 continue
 
             meaning = (
