@@ -10,7 +10,8 @@ SYMBOLS = ["BERAUSDT", "XLMUSDT", "ZECUSDT", "BTCUSDT", "ETHUSDT"]
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE = "state.json"
-BASE = "https://api.binance.com"
+BASE = "https://binance.vision"
+
 
 
 def get_json(url):
