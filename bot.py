@@ -172,7 +172,7 @@ def scan(symbol):
 
 
 def main():
-            info = get_json(BASE + "/spot/currency_pairs")
+    info = get_json(BASE + "/spot/currency_pairs")
 
     active = {
         item["id"].replace("_", "")
@@ -181,6 +181,7 @@ def main():
     }
 
     state = load_state()
+
 
     for symbol in SYMBOLS:
         if symbol not in active:
