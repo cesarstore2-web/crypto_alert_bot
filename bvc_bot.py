@@ -12,7 +12,15 @@ CANDIDATES = [
     "Attijariwafa", "BCP", "CIH", "BOA", "IAM", "Addoha",
     "Akdital", "COSUMAR", "Ciments Maroc", "CMGP Group",
     "CTM", "HPS", "CFG Bank", "Aradei Capital", "BMCI", "CDM",
+    "TGC", "MNG",
 ]
+
+ALIASES = {
+    "TGC": ["TGCC", "TGC", "Travaux"],
+    "MNG": ["Managem", "MNG"],
+}
+_NAMES = None
+
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
 STATE_FILE = "state_bvc.json"
@@ -47,14 +55,44 @@ def fmt(v):
     return f"{v:.2f}"
 
 
+def resolve(symbol):
+    global _NAMES
+    if _NAMES is None:
+        try:
+            _NAMES = [str(n) for n in cas.notation()]
+        except Exception as error:
+            print("notation failed:", str(error)[:100])
+            _NAMES = []
+
+    if symbol not in ALIASES:
+        return symbol
+    if not _NAMES:
+        return ALIASES[symbol][0]
+
+    lower = {n.lower(): n for n in _NAMES}
+    for opt in ALIASES[symbol]:
+        if opt.lower() in lower:
+            return lower[opt.lower()]
+    for opt in ALIASES[symbol]:
+        for low, real in lower.items():
+            if opt.lower() in low:
+                return real
+    print("Name not found in notation:", symbol)
+    return None
+
+
 def get_df(symbol):
+    name = resolve(symbol)
+    if name is None:
+        return None
+
     start = (date.today() - timedelta(days=400)).isoformat()
     df = None
     for kwargs in ({"start": start}, {}):
         try:
-            df = cas.get_history(symbol, **kwargs)
+            df = cas.get_history(name, **kwargs)
         except Exception as error:
-            print("get_history failed:", symbol, kwargs, str(error)[:100])
+            print("get_history failed:", name, kwargs, str(error)[:100])
             df = None
         if df is not None and len(df) > 0:
             break
