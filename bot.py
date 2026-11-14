@@ -3,20 +3,17 @@ import os
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
 
 SYMBOLS = ["BERAUSDT", "XLMUSDT", "ZECUSDT", "BTCUSDT", "ETHUSDT"]
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 STATE_FILE = "state.json"
 
-BASE = "https://gateio.ws"
+BASE = "https://api.gateio.ws/api/v4"
 
 
 def get_json(url):
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0"}
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as response:
         return json.loads(response.read().decode())
 
@@ -38,17 +35,10 @@ def get_klines(symbol, interval, limit):
 
     formatted = []
     for c in raw_data:
-        open_time = int(c[0]) * 1000
+        t_str, vol, close_p, high_p, low_p, open_p = c[:6]
+        open_time = int(t_str) * 1000
         close_time = open_time + interval_ms - 1
-        formatted.append([
-            open_time,
-            c[5],
-            c[3],
-            c[4],
-            c[2],
-            c[1],
-            close_time
-        ])
+        formatted.append([open_time, open_p, high_p, low_p, close_p, vol, close_time])
     return formatted
 
 
@@ -103,6 +93,7 @@ def scan(symbol):
 
     now = int(time.time() * 1000)
 
+    # الشموع المغلقة فقط
     h1 = [c for c in h1 if int(c[6]) < now]
     m15 = [c for c in m15 if int(c[6]) < now]
     m5 = [c for c in m5 if int(c[6]) < now]
@@ -114,7 +105,6 @@ def scan(symbol):
     close15 = [float(c[4]) for c in m15]
 
     trend = "BUY" if close1[-1] > ema(close1, 200)[-1] else "SELL"
-
     ema15 = ema(close15, 20)[-1]
 
     if trend == "BUY" and close15[-1] <= ema15:
@@ -122,50 +112,46 @@ def scan(symbol):
     if trend == "SELL" and close15[-1] >= ema15:
         return None
 
-    recent = m5[-14:]
-    setup = recent[-1]
-    previous = recent[:-1]
+    # A = شمعة الـ Sweep ، B = شمعة الاندفاع ، C = شمعة التأكيد
+    a = m5[-3]
+    c = m5[-1]
+    prior = m5[-15:-3]  # 12 شمعة قبل A
 
-    old_highs = [float(c[2]) for c in previous[-12:]]
-    old_lows = [float(c[3]) for c in previous[-12:]]
+    ref_low = min(float(x[3]) for x in prior)
+    ref_high = max(float(x[2]) for x in prior)
 
-    opening = float(setup[1])
-    high = float(setup[2])
-    low = float(setup[3])
-    close = float(setup[4])
+    a_high, a_low, a_close = float(a[2]), float(a[3]), float(a[4])
+    c_open, c_high, c_low, c_close = float(c[1]), float(c[2]), float(c[3]), float(c[4])
 
     side = None
 
     if trend == "BUY":
-        if low < min(old_lows) and close > min(old_lows) and close > opening:
-            if low > float(recent[-3][2]):
-                side = "BUY"
+        # Sweep للسيولة تحت القيعان + إغلاق فوقها + FVG صاعد + شمعة تأكيد خضراء
+        if a_low < ref_low and a_close > ref_low and c_low > a_high and c_close > c_open:
+            side = "BUY"
 
     if trend == "SELL":
-        if high > max(old_highs) and close < max(old_highs) and close < opening:
-            if high < float(recent[-3][3]):
-                side = "SELL"
+        # Sweep فوق القمم + إغلاق تحتها + FVG هابط + شمعة تأكيد حمراء
+        if a_high > ref_high and a_close < ref_high and c_high < a_low and c_close < c_open:
+            side = "SELL"
 
     if side is None:
         return None
 
-    ranges = [
-        float(c[2]) - float(c[3])
-        for c in m5[-15:-1]
-    ]
+    ranges = [float(x[2]) - float(x[3]) for x in m5[-15:-1]]
     atr_proxy = sum(ranges) / len(ranges)
 
-    entry = close
+    entry = c_close
 
     if side == "BUY":
-        stop = low - 0.25 * atr_proxy
+        stop = a_low - 0.25 * atr_proxy
         risk = entry - stop
         if risk <= 0:
             return None
         tp1 = entry + risk
         tp2 = entry + 2 * risk
     else:
-        stop = high + 0.25 * atr_proxy
+        stop = a_high + 0.25 * atr_proxy
         risk = stop - entry
         if risk <= 0:
             return None
@@ -178,19 +164,17 @@ def scan(symbol):
         "stop": stop,
         "tp1": tp1,
         "tp2": tp2,
-        "candle": str(setup[6])
+        "candle": str(c[6])
     }
 
 
 def main():
     info = get_json(BASE + "/spot/currency_pairs")
-
     active = {
         item["id"].replace("_", "")
         for item in info
         if item.get("trade_status") == "tradable"
     }
-
     state = load_state()
 
     for symbol in SYMBOLS:
@@ -232,6 +216,7 @@ def main():
 
             send_telegram(message)
             state[key] = signal["candle"]
+            save_state(state)
             print("Alert sent:", symbol, signal["side"])
 
         except Exception as error:
