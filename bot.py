@@ -172,14 +172,13 @@ def scan(symbol):
 
 
 def main():
-        info = get_json(BASE + "/api/v3/exchangeInfo?permissions=SPOT")
+            info = get_json(BASE + "/spot/currency_pairs")
 
     active = {
-        item["symbol"]
-        for item in info["symbols"]
-        if item["status"] == "TRADING"
+        item["id"].replace("_", "")
+        for item in info
+        if item.get("trade_status") == "tradable"
     }
-
 
     state = load_state()
 
