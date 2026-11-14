@@ -10,7 +10,7 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
 STATE_FILE = "state.json"
 
-BASE = "https://api.gateio.ws/api/v4"
+BASE ="https://api.gateio.ws/api/v4"
 
 INTERVAL_MS = {
     "1h": 3600 * 1000,
