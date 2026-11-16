@@ -4,245 +4,255 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-SYMBOLS = ["BERAUSDT", "XLMUSDT", "ZECUSDT", "BTCUSDT", "ETHUSDT"]
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"].strip()
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"].strip()
 STATE_FILE = "state.json"
+BASE = "https://api.gateio.ws/api/v4"
 
-BASE ="https://api.gateio.ws/api/v4"
+# ---------------- الأصول ----------------
+CRYPTO = ["XLMUSDT", "ZECUSDT", "XRPUSDT", "HBARUSDT",
+          "ADAUSDT", "LTCUSDT", "BTCUSDT", "ETHUSDT"]
+GOLD = ["XAUUSDT", "PAXGUSDT"]
+# Gate.io لا يملك XAUUSDT، البديل المقابل للذهب هو XAUT_USDT
+GATE_ALIASES = {"XAUUSDT": "XAUT_USDT", "PAXGUSDT": "PAXG_USDT"}
+
+CASA = ["ADH", "AKT", "JET", "TGC", "MNG", "ATW",
+        "BCP", "MSA", "CMA", "LHM", "ATL", "DHO"]
+CASA_EXCHANGE = "CSEMA"
+
+# ---------------- الإعدادات (عدّلها لتطابق الصورة) ----------------
+SIGNAL_TF = "30m"
+TREND_TF = "1h"
+EMA_LEN = 2
+WMA_LEN = 20
+ATR_LEN = 14
+SL_ATR_MULT = 2    # ATR Multiplier (SL)
+RR = 1.0           # Risk-to-Reward 1:X
+
+# ---------------- التوقيت ----------------
+TZ = ZoneInfo("Africa/Casablanca")
+CASA_OPEN = (9, 30)
+CASA_CLOSE = (15, 30)
 
 INTERVAL_MS = {
-    "1h": 3600 * 1000,
-    "15m": 15 * 60 * 1000,
-    "5m": 5 * 60 * 1000,
+    "1m": 60_000, "5m": 300_000, "15m": 900_000,
+    "30m": 1_800_000, "1h": 3_600_000,
 }
 
 
 def get_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode())
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code} for {url}") from e
 
 
-def get_klines(symbol, interval, limit):
-    gate_symbol = symbol.replace("USDT", "_USDT") if "_" not in symbol else symbol
-    params = urllib.parse.urlencode({
-        "currency_pair": gate_symbol,
-        "interval": interval,
-        "limit": limit,
-    })
-    raw_data = get_json(f"{BASE}/spot/candlesticks?{params}")
+# كل شمعة: (open_time_ms, open, high, low, close) ـ مغلقة فقط
+def gate_klines(symbol, interval, limit=100):
+    pair = GATE_ALIASES.get(symbol) or symbol.replace("USDT", "_USDT")
+    q = urllib.parse.urlencode(
+        {"currency_pair": pair, "interval": interval, "limit": limit})
+    raw = get_json(f"{BASE}/spot/candlesticks?{q}")
+    step = INTERVAL_MS[interval]
+    now = int(time.time() * 1000)
+    out = []
+    for c in raw:
+        # Gate: [time, quote_vol, close, high, low, open, ...]
+        t = int(c[0]) * 1000
+        if t + step > now:  # شمعة لم تُغلق بعد
+            continue
+        out.append((t, float(c[5]), float(c[3]), float(c[4]), float(c[2])))
+    out.sort(key=lambda x: x[0])
+    return out
 
-    step = INTERVAL_MS.get(interval, 60 * 1000)
 
-    # Gate.io: [time, quote_volume, close, high, low, open, ...]
-    formatted = []
-    for c in raw_data:
-        t_str, vol, close_p, high_p, low_p, open_p = c[:6]
-        open_time = int(t_str) * 1000
-        close_time = open_time + step - 1
-        formatted.append([open_time, open_p, high_p, low_p, close_p, vol, close_time])
+_tv = None
 
-    formatted.sort(key=lambda x: x[0])
-    return formatted
+
+def tv_klines(code, interval, limit=100):
+    """أسهم الدار البيضاء عبر tvDatafeed (غير رسمي)."""
+    global _tv
+    from tvDatafeed import TvDatafeed, Interval
+    if _tv is None:
+        _tv = TvDatafeed()
+    iv = {
+        "1m": Interval.in_1_minute, "5m": Interval.in_5_minute,
+        "15m": Interval.in_15_minute, "30m": Interval.in_30_minute,
+        "1h": Interval.in_1_hour,
+    }[interval]
+    df = _tv.get_hist(code, CASA_EXCHANGE, interval=iv, n_bars=limit)
+    if df is None or df.empty:
+        return []
+    df = df.iloc[:-1]  # آخر شمعة قيد التكوّن
+    return [
+        (int(ts.timestamp() * 1000), float(r.open), float(r.high),
+         float(r.low), float(r.close))
+        for ts, r in df.iterrows()
+    ]
 
 
 def ema(values, period):
-    alpha = 2 / (period + 1)
-    result = []
-    current = values[0]
-    for value in values:
-        current = alpha * value + (1 - alpha) * current
-        result.append(current)
-    return result
+    a = 2 / (period + 1)
+    cur, res = values[0], []
+    for v in values:
+        cur = a * v + (1 - a) * cur
+        res.append(cur)
+    return res
 
 
-def send_telegram(message):
-    data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
-        "text": message,
-    }).encode()
+def wma(values, period):
+    w = list(range(1, period + 1))
+    den = sum(w)
+    res = [None] * (period - 1)
+    for i in range(period - 1, len(values)):
+        win = values[i - period + 1:i + 1]
+        res.append(sum(x * y for x, y in zip(win, w)) / den)
+    return res
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    request = urllib.request.Request(url, data=data)
 
+def atr(candles, period):
+    trs = []
+    for i in range(1, len(candles)):
+        _, _, h, l, _ = candles[i]
+        pc = candles[i - 1][4]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    trs = trs[-period:]
+    return sum(trs) / len(trs)
+
+
+def state_of(candles):
+    """+1 فوق، -1 تحت، 0 غير متاح."""
+    if len(candles) < WMA_LEN + 2:
+        return 0
+    closes = [c[4] for c in candles]
+    return 1 if ema(closes, EMA_LEN)[-1] > wma(closes, WMA_LEN)[-1] else -1
+
+
+def cross_of(candles):
+    if len(candles) < WMA_LEN + 3:
+        return None
+    closes = [c[4] for c in candles]
+    e, w = ema(closes, EMA_LEN), wma(closes, WMA_LEN)
+    if e[-2] <= w[-2] and e[-1] > w[-1]:
+        return "BUY"
+    if e[-2] >= w[-2] and e[-1] < w[-1]:
+        return "SELL"
+    return None
+
+
+def icon(s):
+    return {1: "🟢 صاعد", -1: "🔴 هابط", 0: "⚪ —"}[s]
+
+
+def fmt(v):
+    return f"{v:.8f}".rstrip("0").rstrip(".")
+
+
+def send_telegram(text):
+    data = urllib.parse.urlencode({"chat_id": CHAT_ID, "text": text}).encode()
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage", data=data)
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            result = json.loads(response.read().decode())
+        with urllib.request.urlopen(req, timeout=20) as r:
+            res = json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(
-            f"Telegram HTTP {e.code} - check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID"
-        ) from e
-
-    if not result.get("ok"):
-        raise RuntimeError(f"Telegram message failed: {result}")
+        raise RuntimeError(f"Telegram HTTP {e.code}") from e
+    if not res.get("ok"):
+        raise RuntimeError(f"Telegram failed: {res}")
 
 
 def load_state():
     try:
-        with open(STATE_FILE, "r") as file:
-            return json.load(file)
+        with open(STATE_FILE) as f:
+            return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def save_state(state):
-    with open(STATE_FILE, "w") as file:
-        json.dump(state, file, indent=2)
+def save_state(s):
+    with open(STATE_FILE, "w") as f:
+        json.dump(s, f, indent=2)
 
 
-def fmt(value):
-    return f"{value:.8f}".rstrip("0").rstrip(".")
+def casa_open_now():
+    n = datetime.now(TZ)
+    if n.weekday() >= 5:
+        return False
+    hm = (n.hour, n.minute)
+    return CASA_OPEN <= hm <= CASA_CLOSE
 
 
-def scan(symbol):
-    h1 = get_klines(symbol, "1h", 220)
-    m15 = get_klines(symbol, "15m", 100)
-    m5 = get_klines(symbol, "5m", 100)
-
-    now = int(time.time() * 1000)
-
-    # الشموع المغلقة فقط
-    h1 = [c for c in h1 if int(c[6]) < now]
-    m15 = [c for c in m15 if int(c[6]) < now]
-    m5 = [c for c in m5 if int(c[6]) < now]
-
-    if len(h1) < 205 or len(m15) < 25 or len(m5) < 20:
+def scan(name, fetch):
+    c30 = fetch(name, SIGNAL_TF)
+    side = cross_of(c30)
+    if not side:
         return None
 
-    close1 = [float(c[4]) for c in h1]
-    close15 = [float(c[4]) for c in m15]
-
-    trend = "BUY" if close1[-1] > ema(close1, 200)[-1] else "SELL"
-    ema15 = ema(close15, 20)[-1]
-
-    if trend == "BUY" and close15[-1] <= ema15:
+    # الدخول: إغلاق شمعة التقاطع | SL = ATR x 2 | الهدف RR 1:1
+    entry = c30[-1][4]
+    risk = SL_ATR_MULT * atr(c30, ATR_LEN)
+    if risk <= 0:
         return None
-    if trend == "SELL" and close15[-1] >= ema15:
-        return None
+    sign = 1 if side == "BUY" else -1
+    stop = entry - sign * risk
+    tp = entry + sign * risk * RR
 
-    # A = شمعة الـ Sweep ، C = شمعة التأكيد ، والـ FVG هو الفجوة بينهما
-    a = m5[-3]
-    c = m5[-1]
-    prior = m5[-15:-3]  # 12 شمعة قبل A
+    trend = state_of(fetch(name, TREND_TF))
 
-    ref_low = min(float(x[3]) for x in prior)
-    ref_high = max(float(x[2]) for x in prior)
+    return {"side": side, "entry": entry, "stop": stop, "tp": tp, "candle": str(c30[-1][0]), "trend": trend}
 
-    a_high, a_low, a_close = float(a[2]), float(a[3]), float(a[4])
-    c_open, c_high, c_low, c_close = (
-        float(c[1]), float(c[2]), float(c[3]), float(c[4])
-    )
 
-    side = None
-
-    if trend == "BUY":
-        if a_low < ref_low and a_close > ref_low and c_low > a_high and c_close > c_open:
-            side = "BUY"
-
-    if trend == "SELL":
-        if a_high > ref_high and a_close < ref_high and c_high < a_low and c_close < c_open:
-            side = "SELL"
-
-    if side is None:
-        return None
-
-    ranges = [float(x[2]) - float(x[3]) for x in m5[-15:-1]]
-    atr_proxy = sum(ranges) / len(ranges)
-
-    entry = c_close
-
-    if side == "BUY":
-        stop = a_low - 0.25 * atr_proxy
-        risk = entry - stop
-        if risk <= 0:
-            return None
-        tp1 = entry + risk
-        tp2 = entry + 2 * risk
+def build_message(name, kind, s):
+    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M (توقيت المغرب)")
+    if kind == "casa":
+        meaning = "شراء محتمل" if s["side"] == "BUY" else "بيع / تخفيف المركز"
     else:
-        stop = a_high + 0.25 * atr_proxy
-        risk = stop - entry
-        if risk <= 0:
-            return None
-        tp1 = entry - risk
-        tp2 = entry - 2 * risk
-
-    return {
-        "side": side,
-        "entry": entry,
-        "stop": stop,
-        "tp1": tp1,
-        "tp2": tp2,
-        "candle": str(c[6]),
-    }
-
-
-def get_active_pairs():
-    try:
-        info = get_json(BASE + "/spot/currency_pairs")
-        return {
-            item["id"].replace("_", "")
-            for item in info
-            if item.get("trade_status") == "tradable"
-        }
-    except Exception as error:
-        print("Could not load pairs list, scanning all symbols:", str(error))
-        return set(SYMBOLS)
+        meaning = ("شراء محتمل" if s["side"] == "BUY"
+                   else "تنبيه بيع أو تخفيف مركز Spot قائم، وليس فتح Short")
+    return (
+        f"🔔 ALERT | {name}\n"
+        f"الإشارة: {s['side']} ({meaning})\n"
+        f"التقاطع: EMA{EMA_LEN} / WMA{WMA_LEN} على {SIGNAL_TF}\n"
+        f"الدخول: {fmt(s['entry'])}\n"
+        f"وقف الخسارة: {fmt(s['stop'])}\n"
+        f"الهدف: {fmt(s['tp'])}\n"
+        f"━━━━━━━━━━\n"
+        f"الاتجاه العام (1H): {icon(s['trend'])}\n"
+        f"🕒 {now}\n"
+        f"تنبيه تجريبي وليس ضماناً للربح."
+    )
 
 
 def main():
-    active = get_active_pairs()
     state = load_state()
+    jobs = [(s, "gate") for s in CRYPTO + GOLD]
+    if casa_open_now():
+        jobs += [(c, "casa") for c in CASA]
+    else:
+        print("Casablanca market closed, skipping stocks")
 
-    for symbol in SYMBOLS:
-        if symbol not in active:
-            print("Unavailable Spot pair:", symbol)
-            continue
-
+    for name, kind in jobs:
+        fetch = gate_klines if kind == "gate" else tv_klines
         try:
-            signal = scan(symbol)
-
-            if not signal:
-                print("No signal:", symbol)
+            sig = scan(name, fetch)
+            if not sig:
+                print("No signal:", name)
                 continue
-
-            key = symbol + ":" + signal["side"]
-
-            if state.get(key) == signal["candle"]:
-                print("Already sent:", symbol)
+            key = f"{name}:{sig['side']}"
+            if state.get(key) == sig["candle"]:
+                print("Already sent:", name)
                 continue
-
-            meaning = (
-                "شراء محتمل"
-                if signal["side"] == "BUY"
-                else "تنبيه بيع أو تخفيف مركز Spot قائم، وليس فتح Short"
-            )
-
-            message = (
-                f"🔔 CRYPTO ALERT\n"
-                f"العملة: {symbol}\n"
-                f"الإشارة: {signal['side']}\n"
-                f"المعنى: {meaning}\n"
-                f"الفريمات: 1H / 15M / 5M\n"
-                f"الدخول المرجعي: {fmt(signal['entry'])}\n"
-                f"وقف الخسارة: {fmt(signal['stop'])}\n"
-                f"الهدف الأول: {fmt(signal['tp1'])}\n"
-                f"الهدف الثاني: {fmt(signal['tp2'])}\n"
-                f"الشروط: EMA + Liquidity Sweep + FVG\n"
-                f"تنبيه تجريبي وليس ضماناً للربح."
-            )
-
-            send_telegram(message)
-            state[key] = signal["candle"]
+            send_telegram(build_message(name, kind, sig))
+            state[key] = sig["candle"]
             save_state(state)
-            print("Alert sent:", symbol, signal["side"])
-
-        except Exception as error:
-            print("Error:", symbol, str(error))
+            print("Alert sent:", name, sig["side"])
+        except Exception as e:
+            print("Error:", name, str(e))
 
     save_state(state)
 
