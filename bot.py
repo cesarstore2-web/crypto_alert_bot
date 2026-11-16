@@ -23,7 +23,7 @@ CASA = ["ADH", "AKT", "JET", "TGC", "MNG", "ATW",
         "BCP", "MSA", "CMA", "LHM", "ATL", "DHO"]
 CASA_EXCHANGE = "CSEMA"
 
-# ---------------- الإعدادات (عدّلها لتطابق الصورة) ----------------
+# ---------------- الإعدادات ----------------
 SIGNAL_TF = "30m"
 TREND_TF = "1h"
 EMA_LEN = 2
@@ -204,7 +204,8 @@ def scan(name, fetch):
 
     trend = state_of(fetch(name, TREND_TF))
 
-    return {"side": side, "entry": entry, "stop": stop, "tp": tp, "candle": str(c30[-1][0]), "trend": trend}
+    return {"side": side, "entry": entry, "stop": stop, "tp": tp,
+            "candle": str(c30[-1][0]), "trend": trend}
 
 
 def build_message(name, kind, s):
