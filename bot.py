@@ -204,6 +204,10 @@ def scan(name, fetch):
 
     trend = state_of(fetch(name, TREND_TF))
 
+    # فقط الإشارات المتوافقة مع الاتجاه العام 1H
+    if (side == "BUY" and trend != 1) or (side == "SELL" and trend != -1):
+        return None
+
     return {"side": side, "entry": entry, "stop": stop, "tp": tp,
             "candle": str(c30[-1][0]), "trend": trend}
 
