@@ -1,6 +1,7 @@
 import json
 
 import joblib
+import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier
 
@@ -11,7 +12,12 @@ CRYPTO = ["XLMUSDT", "ZECUSDT", "XRPUSDT", "HBARUSDT",
           "ADAUSDT", "LTCUSDT", "BTCUSDT", "ETHUSDT"]
 GOLD = ["XAUUSDT", "PAXGUSDT"]
 TRAIN_TFS = ["5m", "15m", "30m", "1h", "4h", "1d"]  # 1d للأسهم المغربية
-THRESHOLD = 0.80
+
+# التوصية القوية: أقل حد احتمال (لا يقل عن MIN_THRESHOLD) تكون عنده
+# نسبة النجاح في بيانات الاختبار >= TARGET_WIN وعدد الإشارات >= MIN_N
+MIN_THRESHOLD = 0.60   # الحد الأدنى للتقييم الذي اخترته
+TARGET_WIN = 0.50      # بنسبة 1:2 التعادل عند 0.333
+MIN_N = 30
 
 
 def main():
@@ -40,28 +46,43 @@ def main():
     if len(data) < 300 or data["y"].nunique() < 2:
         raise SystemExit("Not enough data to train a model")
 
-    params = dict(n_estimators=300, learning_rate=0.03, num_leaves=15,
-                  min_child_samples=20, subsample=0.8, subsample_freq=1,
+    params = dict(n_estimators=200, learning_rate=0.03, num_leaves=15,
+                  min_child_samples=40, subsample=0.8, subsample_freq=1,
                   colsample_bytree=0.8, verbose=-1)
 
     # تحقق زمني: تدريب على أول 80% واختبار على آخر 20%
     cut = int(len(data) * 0.8)
     tr, va = data.iloc[:cut], data.iloc[cut:]
-    m = LGBMClassifier(**params).fit(tr[FEATURES], tr["y"])
-    p = m.predict_proba(va[FEATURES])[:, 1]
-    sel = va[p >= THRESHOLD]
+    model = LGBMClassifier(**params).fit(tr[FEATURES], tr["y"])
+    p = model.predict_proba(va[FEATURES])[:, 1]
+
+    table, threshold, valid_win, valid_n = {}, None, None, None
+    for th in np.arange(0.30, 0.901, 0.025):
+        sel = va[p >= th]
+        n = len(sel)
+        win = float(sel["y"].mean()) if n else None
+        table[f"{th:.3f}"] = {"n": n,
+                              "win": round(win, 3) if win is not None else None}
+        if (threshold is None and th >= MIN_THRESHOLD - 1e-9
+                and n >= MIN_N and win >= TARGET_WIN):
+            threshold, valid_win, valid_n = round(float(th), 3), win, n
+
     report = {
         "breakouts": len(data),
         "base_win_rate": round(float(data["y"].mean()), 3),
         "valid_size": len(va),
-        "valid_selected_80": len(sel),
-        "valid_win_rate_selected": (round(float(sel["y"].mean()), 3)
-                                    if len(sel) else None),
+        "strong_threshold": threshold,
+        "valid_win_at_threshold": (round(valid_win, 3)
+                                   if valid_win is not None else None),
+        "valid_signals_at_threshold": valid_n,
+        "by_threshold": table,
     }
     print(json.dumps(report, indent=2))
 
-    final = LGBMClassifier(**params).fit(data[FEATURES], data["y"])
-    joblib.dump({"model": final, "features": FEATURES}, "model.pkl")
+    # نحفظ النموذج الذي اختُبر (نفس النموذج الذي حُسب له الحد)
+    joblib.dump({"model": model, "features": FEATURES,
+                 "threshold": threshold, "valid_win": valid_win,
+                 "valid_n": valid_n}, "model.pkl")
     with open("model_report.json", "w") as f:
         json.dump(report, f, indent=2)
     print("model.pkl saved")
