@@ -23,7 +23,9 @@ ALIASES = {"XAUUSDT": "XAUT/USDT", "PAXGUSDT": "PAXG/USDT"}
 
 
 def make_exchange():
-    return ccxt.gateio({"enableRateLimit": True})
+    # الاسم الجديد في ccxt هو gate، والقديم gateio
+    cls = getattr(ccxt, "gate", None) or getattr(ccxt, "gateio")
+    return cls({"enableRateLimit": True})
 
 
 def to_pair(sym):
